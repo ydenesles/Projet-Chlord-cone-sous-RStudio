@@ -1,0 +1,631 @@
+---
+title: "Script_Operation"
+author: "Yolan Denesles"
+date: "2026-03-30"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Visualisation des données spatiales avec Python
+
+## Importation des librairies
+
+```{r importation des librairies, include=FALSE}
+library(dplyr)
+library(ggplot2)
+library(cartography)
+library(sf)
+library(tidyverse)
+library(patchwork)
+library(readxl)
+library(ggthemes)
+library(readxl)
+library(randomForest)
+library(stringr)
+library(viridis)
+```
+
+# Importation des données
+
+```{r}
+data <- read_excel("Data/BaseCLD2026.xlsx", 
+                   skip = 1)
+
+# Voir les premières lignes
+head(data)
+```
+
+```{r}
+# Structure des données
+str(data)
+```
+
+```{r}
+# Dimensions
+dim(data)
+```
+
+# Conversion des moyennes
+
+```{r}
+data$mnt_tpi_mean        <- as.numeric(data$mnt_tpi_mean)
+data$mnt_tri_mean        <- as.numeric(data$mnt_tri_mean)
+data$mnt_rugosite_mean   <- as.numeric(data$mnt_rugosite_mean)
+data$mnt_ombrage_mean    <- as.numeric(data$mnt_ombrage_mean)
+data$mnt_exposition_mean <- as.numeric(data$mnt_exposition_mean)
+data$mnt_pente_mean      <- as.numeric(data$mnt_pente_mean)
+data$Taux_5b_hydro       <- as.numeric(data$Taux_5b_hydro)
+data$Taux_Chlordecone    <- as.numeric(data$Taux_Chlordecone)
+```
+
+# Conversion des dates
+
+```{r}
+# Conversion en format date
+data$Date_prelevement <- dmy(data$Date_prelevement)
+data$Date_enregistrement <- dmy(data$Date_enregistrement)
+data$Date_analyse <- dmy(data$Date_analyse)
+```
+
+# Vérification de la présence de valeurs manquantes
+
+```{r}
+# Valeurs manquantes par colonne
+colSums(is.na(data))
+```
+
+Suite à ces résultats, on décide pour la suite des analyses, d'imputer par la moyenne les variables quantitatives.
+
+```{r}
+vars_num <- c("mnt_tpi_mean", "mnt_tri_mean", "mnt_rugosite_mean",
+              "mnt_ombrage_mean", "mnt_exposition_mean", "mnt_pente_mean")
+
+for (v in vars_num) {
+  data[[v]][is.na(data[[v]])] <- mean(data[[v]], na.rm = TRUE)
+}
+```
+
+```{r}
+# Vérification après imputation
+colSums(is.na(data))
+```
+
+```{r}
+data$COMMU_LAB[is.na(data$COMMU_LAB)] <- "Inconnu"
+data$Sol_simple[is.na(data$Sol_simple)] <- "Inconnu"
+data$type_sol[is.na(data$type_sol)] <- "Inconnu"
+```
+
+Les variables quantitatives présentant peu de valeurs manquantes ont été imputées par la moyenne afin de conserver l'information statistique. Les variables qualitatives ont été recodées en une modalité "Inconnu". Une variable présentant un taux de valeurs manquantes trop élevé (\>50%) a été mise de côté afin d'éviter un biais dans les analyses.
+
+# Analyse exploratoire des données
+
+Quels facteurs expliquent la contamination au chlordécone ?
+
+On va tester :
+
+-Sol - Pluie - Commune - Variables topographiques - Temps (année) - 5b-hydro
+
+## Statistiques descriptives du chlordécone
+
+```{r}
+summary(data$Taux_Chlordecone)
+sd(data$Taux_Chlordecone, na.rm = TRUE)
+
+# Histogramme
+ggplot(data, aes(x = Taux_Chlordecone)) +
+  geom_histogram(bins = 30) +
+  theme_minimal() +
+  labs(title = "Distribution du taux de chlordécone")
+```
+
+La distribution du taux de chlordécone est asymétrique à droite, indiquant que la majorité des parcelles présentent une faible contamination tandis que certaines parcelles présentent des niveaux très élevés.
+
+## Effet du type de sol
+
+```{r}
+ggplot(data, aes(x = Sol_simple, y = Taux_Chlordecone)) +
+  geom_boxplot() +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(title = "Taux de chlordécone selon le type de sol")
+```
+
+```{r}
+anova_sol <- aov(Taux_Chlordecone ~ Sol_simple, data = data)
+summary(anova_sol)
+```
+
+La p-value \< 0.05, on conclut que le type de sol influence significativement la contamination.
+
+A l'aide du graphique, on peut déjà se faire une idée des sols potentiellement influant sur le taux de chlordecone come par exemple le 'Andosol'.
+
+## Effet de la pluviométrie
+
+```{r}
+ggplot(data, aes(x = RAIN, y = Taux_Chlordecone)) +
+  geom_boxplot() +
+  theme_minimal() +
+  labs(title = "Taux de chlordécone selon la pluviométrie")
+```
+
+```{r}
+anova_rain <- aov(Taux_Chlordecone ~ RAIN, data = data)
+summary(anova_rain)
+```
+
+La p-value du test ANOVA est \<\< 0.05 par conséquent la pluviométrie influence la dispersion du chlordécone par ruissellement et infiltration (visible via le graphique en cas de forte précipitation).
+
+## Effet de la commune (géographie)
+
+```{r}
+ggplot(data, aes(x = COMMU_LAB, y = Taux_Chlordecone)) +
+  geom_boxplot() +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90))
+```
+
+```{r}
+anova_commune <- aov(Taux_Chlordecone ~ COMMU_LAB, data = data)
+summary(anova_commune)
+```
+
+La p-value confirme encore une fois que la variable a une influence sur la variable à expliquer.
+
+Sur le garphique on peut observer quelques communes où le taux de chlordecone est généralement très important comme 'Marin(le)' ou 'Macouba'.
+
+## Corrélations avec les variables topographiques
+
+```{r}
+vars_topo <- data[, c("Taux_Chlordecone",
+                      "mnt_pente_mean",
+                      "mnt_exposition_mean",
+                      "mnt_ombrage_mean",
+                      "mnt_rugosite_mean",
+                      "mnt_tri_mean",
+                      "mnt_tpi_mean")]
+
+cor_matrix <- cor(vars_topo, use = "complete.obs")
+
+cor_df <- as.data.frame(as.table(cor_matrix))
+colnames(cor_df) <- c("Var1", "Var2", "Correlation")
+```
+
+```{r}
+ggplot(cor_df, aes(x = Var1, y = Var2, fill = Correlation)) +
+  geom_tile() +
+  geom_text(aes(label = round(Correlation, 2)), size = 3) +
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white",
+                       midpoint = 0, limits = c(-1, 1)) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    plot.margin = unit(c(1, 1, 1, 1), "cm")
+  ) +
+  coord_fixed() +
+  labs(title = "Heatmap des corrélations",
+       x = "",
+       y = "")
+```
+
+Les variables mises en avant sont très peu corrélées au taux de chlordécone.
+
+## Effet du temps (année)
+
+```{r}
+ggplot(data, aes(x = as.factor(ANNEE), y = Taux_Chlordecone)) +
+  geom_boxplot(fill = "steelblue", outlier.color = "red", alpha = 0.7) +
+  theme_minimal() +
+  labs(
+    title = "Évolution du chlordécone dans le temps",
+    subtitle = "Analyse par année (Données Chlordecone)",
+    x = "Année",
+    y = "Taux de Chlordecone"
+  ) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r}
+model_time <- lm(Taux_Chlordecone ~ ANNEE, data = data)
+summary(model_time)
+```
+
+Visiblement la Taux semble baisser avec le temps, cette évolution est observable sur le graphique avec la médiane des box plot, les boîtes sont de plus en plus petites (homogénéisation des taux). Certaines années la présence d'outiers est très important ce qui pourrait s'expliquer par différentes variables (déréglement climatique par exemple).
+
+## Lien entre chlordecone et 5b-hydro
+
+```{r}
+ggplot(data, aes(x = Taux_5b_hydro, y = Taux_Chlordecone)) +
+  # alpha = 0.1 rend les points transparents : les zones sombres sont les plus denses
+  geom_point(alpha = 0.1, color = "#2c3e50") + 
+  # Ajout d'une droite de régression linéaire (méthode lm)
+  geom_smooth(method = "lm", color = "red", se = TRUE) +
+  # Passage en échelle logarithmique (très utile pour les polluants)
+  scale_x_log10() + 
+  scale_y_log10() +
+  theme_minimal() +
+  labs(
+    title = "Corrélation entre Chlordécone et son métabolite",
+    subtitle = "Visualisation avec échelles log et droite de tendance",
+    x = "Taux de 5b-hydro-chlordécone (log)",
+    y = "Taux de Chlordécone (log)"
+  )
+```
+
+Dans la recherche de corrélation entre les deux variables, on observe que les valeurs de taux de 5b-hydro sont anormalement distribuées.
+
+Donc on va analyser en profondeur ces données.
+
+```{r}
+# Voir les valeurs uniques présentes
+unique(data$Taux_5b_hydro)
+
+# Compter l'occurrence de chaque valeur
+table(data$Taux_5b_hydro)
+```
+
+L'analyse de ces résultats montre que la variable n'est pas "plate" (elle contient beaucoup de valeurs différentes), mais elle contient des valeurs critiques qui empêchent tout calcul statistique
+
+```{r}
+# Création d'un dataset filtré
+# On enlève les Infini, les NA, et la valeur aberrante 999
+data_propre <- subset(data, 
+                      is.finite(Taux_5b_hydro) & 
+                      is.finite(Taux_Chlordecone) & 
+                      Taux_5b_hydro < 900) # Exclut le code 999
+
+# Calcul de la corrélation sur les données nettoyées
+# On utilise Spearman car vos données ont des seuils de détection (0.001, 0.0033...)
+res_cor <- cor(data_propre$Taux_5b_hydro, 
+               data_propre$Taux_Chlordecone, 
+               method = "spearman")
+
+print(res_cor)
+```
+
+Après nettoyage des données (exclusion des valeurs infinies et des codes erreurs 999), le coefficient de corrélation de Spearman s'élève à $0,646$. Ce résultat démontre une liaison statistique robuste et positive entre le polluant et son produit de dégradation, confirmant la pertinence du 5b-hydro-chlordécone comme indicateur de suivi environnemental.
+
+## Régression linéaire multiple
+
+On decide d'introduire toutes les variables significatives dans un seul modèle.
+
+```{r}
+model <- lm(Taux_Chlordecone ~ Sol_simple +
+                                  RAIN +
+                                  ANNEE,
+            data = data)
+
+summary(model)
+```
+
+Le modèle de régression est globalement significatif (p-value \< 0.001), ce qui indique que les variables explicatives incluses dans le modèle expliquent une partie significative de la variabilité du taux de chlordécone. Le coefficient de détermination R² = 0.262 indique que le modèle explique environ 26 % de la variabilité du taux de chlordécone. Cela signifie que d'autres facteurs non inclus dans le modèle influencent également la contamination.
+
+Plus précisément, voici les analyses pour chaque variables et pour chaque modalité :
+
+-   L'année a un effet négatif et significatif sur le taux de chlordécone. Cela signifie que la contamination diminue au fil du temps. Cette diminution peut s'expliquer par la dégradation progressive du chlordécone dans les sols et par l'arrêt de son utilisation.
+
+-   Le type de sol influence significativement la contamination au chlordécone. Les sols de type Andosol présentent des niveaux de contamination plus élevés, tandis que les sols de type Nitisol présentent des niveaux plus faibles. Cela suggère que certaines propriétés des sols, comme la capacité de rétention ou la composition minérale, influencent la persistance du chlordécone dans l'environnement.
+
+-   La pluviométrie influence significativement la contamination au chlordécone. Une augmentation de la pluviométrie est associée à une augmentation du taux de chlordécone jusqu'à un certain seuil, probablement en raison du lessivage des sols et du transport du pesticide. En revanche, dans les zones de très forte pluviométrie, la contamination diminue, ce qui peut s'expliquer par un lessivage plus important entraînant une dilution du pesticide.
+
+## Autre modélisation : Random Forest
+
+```{r}
+rf <- randomForest(Taux_Chlordecone ~ Sol_simple +
+                                          RAIN +
+                                          mnt_pente_mean +
+                                          mnt_exposition_mean +
+                                          mnt_ombrage_mean +
+                                          mnt_rugosite_mean +
+                                          mnt_tri_mean +
+                                          mnt_tpi_mean +
+                                          ANNEE,
+                   data = data,
+                   importance = TRUE)
+
+importance(rf)
+varImpPlot(rf)
+```
+
+On a deux indicateurs important ici sur l'importance des variables :
+
+-   %IncMSE → importance pour la prédiction (le plus important)
+
+-   IncNodePurity → importance dans les arbres (moins interprétable)
+
+Le modèle Random Forest met en évidence que la variable la plus importante dans l'explication de la contamination au chlordécone est l'année, ce qui confirme une évolution temporelle de la contamination. Les variables topographiques, notamment l'exposition et l'ombrage, apparaissent également comme des facteurs déterminants. La pluviométrie et le type de sol jouent également un rôle important. Ces résultats montrent que la contamination dépend à la fois de facteurs temporels, climatiques, pédologiques et topographiques.
+
+La contamination au chlordécone est principalement expliquée par des facteurs temporels, mais également par des facteurs environnementaux tels que l'exposition, l'ombrage, la pluviométrie, le type de sol et la topographie, qui influencent la rétention et le transport du pesticide dans les sols.
+
+# Y a-t-il des zones géographiques plus contaminées que d'autres ? (Cartographie)
+
+```{r}
+# Transformer en objet spatial
+data_sf <- st_as_sf(data,
+                    coords = c("X", "Y"),
+                    crs = 2972)  # à adapter si tes coordonnées sont en Lambert Antilles
+```
+
+```{r}
+data$classe_contamination <- cut(data$Taux_Chlordecone,
+                                 breaks = c(0, 0.1, 0.5, 1, 5, max(data$Taux_Chlordecone)),
+                                 labels = c("Très faible", "Faible", "Moyen", "Élevé", "Très élevé"))
+
+data_sf <- st_as_sf(data, coords = c("X", "Y"), crs = 2972)
+
+ggplot(data_sf) +
+  geom_sf(aes(color = classe_contamination), size = 0.7) +
+  theme_minimal() +
+  labs(title = "Classes de contamination au chlordécone",
+       color = "Niveau de contamination") +
+  scale_color_manual(values = c("pink", "orange", "red", "maroon", "black")) +
+  guides(color = guide_legend(override.aes = list(size = 4)))
+```
+
+La cartographie des classes de contamination met en évidence une hétérogénéité spatiale de la pollution au chlordécone. Certaines zones présentent des niveaux de contamination plus élevés, ce qui suggère l'influence de facteurs environnementaux et historiques. Cette cartographie permet d'identifier visuellement les zones prioritaires pour la surveillance et la gestion du risque sanitaire.
+
+```{r}
+contamination_commune <- data %>%
+  group_by(COMMU_LAB) %>%
+  summarise(
+    moyenne_chlordecone = mean(Taux_Chlordecone, na.rm = TRUE),
+    nb_parcelles = n()
+  )
+```
+
+```{r}
+contamination_commune %>%
+  arrange(desc(moyenne_chlordecone))
+```
+
+On va maintenant approfondir l'analyse spatial.
+
+```{r carto-shapefile}
+# Chargement du shapefile de la Martinique (package cartography)
+martinique_sf <- st_read(dsn = system.file("gpkg/mtq.gpkg",
+                                            package = "cartography"),
+                         quiet = TRUE)
+
+# Aperçu des colonnes disponibles
+head(martinique_sf)
+st_crs(martinique_sf)
+```
+
+------------------------------------------------------------------------
+
+## Préparation : agrégation des données par commune
+
+```{r carto-agregation}
+# ---- Nettoyage des noms de communes ----------------------------------------
+# La variable COMMU_LAB contient des noms en majuscules avec articles en fin
+# (ex : "MORNE-ROUGE(LE)"). On crée une version normalisée pour la jointure.
+
+normaliser_commune <- function(x) {
+  x <- toupper(x)
+  x <- trimws(x)
+  # Supprimer les accents
+  x <- iconv(x, to = "ASCII//TRANSLIT")
+  # Supprimer articles entre parenthèses
+  x <- gsub("\\(LE\\)|\\(LA\\)|\\(LES\\)|\\(L'\\)", "", x)
+  # Supprimer caractères spéciaux résiduels
+  x <- gsub("[^A-Z0-9' -]", "", x)
+  x <- trimws(x)
+  return(x)
+}
+
+# Normalisation du shapefile
+martinique_sf <- martinique_sf %>%
+  mutate(LIBGEO_NORM = normaliser_commune(LIBGEO))
+
+# Normalisation dans les données
+data <- data %>%
+  mutate(COMMU_NORM = normaliser_commune(COMMU_LAB))
+
+# Vérification du mapping (détecter les communes non appariées)
+communes_data   <- sort(unique(data$COMMU_NORM))
+communes_shp    <- sort(unique(martinique_sf$LIBGEO_NORM))
+cat("Communes présentes dans les données mais absentes du shapefile :\n")
+print(setdiff(communes_data, communes_shp))
+```
+
+```{r carto-corrections-manuelles}
+# Corrections manuelles si nécessaire après vérification ci-dessus
+data <- data %>%
+  mutate(COMMU_NORM = case_when(
+    COMMU_NORM == "FRANCOIS"          ~ "LE FRANCOIS",
+    COMMU_NORM == "DIAMANT"           ~ "LE DIAMANT",
+    COMMU_NORM == "LORRAIN"           ~ "LE LORRAIN",
+    COMMU_NORM == "ROBERT"            ~ "LE ROBERT",
+    COMMU_NORM == "VAUCLIN"           ~ "LE VAUCLIN",
+    COMMU_NORM == "MARIN"             ~ "LE MARIN",
+    COMMU_NORM == "CARBET"            ~ "LE CARBET",
+    COMMU_NORM == "LAMENTIN"          ~ "LE LAMENTIN",
+    COMMU_NORM == "MARIGOT"           ~ "LE MARIGOT",
+    COMMU_NORM == "PRECHEUR"          ~ "LE PRECHEUR",
+    COMMU_NORM == "MORNE-ROUGE"       ~ "LE MORNE-ROUGE",
+    COMMU_NORM == "MORNE-VERT"        ~ "LE MORNE-VERT",
+    COMMU_NORM == "TRINITE"           ~ "LA TRINITE",
+    COMMU_NORM == "ANSES-D'ARLET"     ~ "LES ANSES-D'ARLET",
+    COMMU_NORM == "TROIS-ILETS"       ~ "LES TROIS-ILETS",
+    COMMU_NORM == "GRAND'RIVIERE"     ~ "GRAND-RIVIERE",
+    TRUE ~ COMMU_NORM
+  ))
+```
+
+```{r carto-stats-communes}
+# Agrégation des indicateurs clés par commune
+stats_communes <- data %>%
+  filter(COMMU_NORM != normaliser_commune("Hors Martinique")) %>%
+  group_by(COMMU_NORM) %>%
+  summarise(
+    moy_chlordecone    = mean(Taux_Chlordecone, na.rm = TRUE),
+    med_chlordecone    = median(Taux_Chlordecone, na.rm = TRUE),
+    max_chlordecone    = max(Taux_Chlordecone, na.rm = TRUE),
+    nb_prelevements    = n(),
+    pct_contaminees    = mean(Taux_Chlordecone > 0.1, na.rm = TRUE) * 100,
+    pct_fortement_cont = mean(Taux_Chlordecone > 1.0, na.rm = TRUE) * 100,
+    .groups = "drop"
+  )
+
+# Jointure avec le shapefile
+martinique_stats_sf <- martinique_sf %>%
+  left_join(stats_communes, by = c("LIBGEO_NORM" = "COMMU_NORM"))
+
+head(martinique_stats_sf)
+```
+
+## Carte 1 : Taux moyen de chlordécone par commune
+
+```{r carte-taux-moyen, fig.width=8, fig.height=7}
+ggplot(martinique_stats_sf) +
+  geom_sf(aes(fill = moy_chlordecone), color = "white", linewidth = 0.4) +
+  scale_fill_gradientn(
+    colours  = c("#ffffcc", "#fecc5c", "#fd8d3c", "#f03b20", "#bd0026"),
+    name     = "Taux moyen\n(mg/kg MS)",
+    na.value = "grey80",
+    trans    = "sqrt"        # racine carrée pour mieux lire les faibles valeurs
+  ) +
+  geom_sf_text(aes(label = LIBGEO), size = 2, color = "grey20", check_overlap = TRUE) +
+  theme_map() +
+  theme(
+    legend.position   = "right",
+    plot.title        = element_text(size = 14, face = "bold"),
+    plot.subtitle     = element_text(size = 10, color = "grey40"),
+    plot.caption      = element_text(size = 8,  color = "grey50")
+  ) +
+  labs(
+    title    = "Taux moyen de chlordécone par commune – Martinique",
+    subtitle = "Période 2010–2019 | Échelle racine carrée",
+    caption  = "Source : BaseCLD2026"
+  )
+```
+
+Les communes du nord-est de la Martinique (Morne-Rouge, Grand-Rivière, Macouba, Basse-Pointe) présentent les taux moyens les plus élevés, reflet d'une histoire agricole intensive de culture bananière sous chlordécone.
+
+## Carte 2 : Pourcentage de parcelles dépassant le seuil réglementaire (0,1 mg/kg)
+
+```{r carte-pct-contaminees, fig.width=8, fig.height=7}
+ggplot(martinique_stats_sf) +
+  geom_sf(aes(fill = pct_contaminees), color = "white", linewidth = 0.4) +
+  scale_fill_gradientn(
+    colours  = c("#edf8fb", "#b2e2e2", "#66c2a4", "#2ca25f", "#006d2c"),
+    name     = "% parcelles\n> 0,1 mg/kg",
+    na.value = "grey80",
+    limits   = c(0, 100)
+  ) +
+  geom_sf_text(aes(label = LIBGEO), size = 2, color = "grey20", check_overlap = TRUE) +
+  theme_map() +
+  theme(
+    legend.position = "right",
+    plot.title      = element_text(size = 14, face = "bold"),
+    plot.subtitle   = element_text(size = 10, color = "grey40"),
+    plot.caption    = element_text(size = 8,  color = "grey50")
+  ) +
+  labs(
+    title    = "% de parcelles au-dessus du seuil réglementaire (0,1 mg/kg)",
+    subtitle = "Seuil retenu : 0,1 mg/kg MS – Période 2010–2019",
+    caption  = "Source : BaseCLD2026"
+  )
+```
+
+La part de parcelles dépassant le seuil réglementaire (0,1 mg/kg MS) confirme ce gradient géographique et souligne que dans certaines communes plus de 80 % des parcelles sont concernées.
+
+## Carte 3 : Évolution temporelle --- comparaison 2010 vs 2019
+
+```{r carte-evolution, fig.width=14, fig.height=7}
+# Statistiques par commune pour 2010 et 2019
+stats_2010 <- data %>%
+  filter(ANNEE == 2010,
+         COMMU_NORM != normaliser_commune("Hors Martinique")) %>%
+  group_by(COMMU_NORM) %>%
+  summarise(moy_chld = mean(Taux_Chlordecone, na.rm = TRUE), .groups = "drop")
+
+stats_2019 <- data %>%
+  filter(ANNEE == 2019,
+         COMMU_NORM != normaliser_commune("Hors Martinique")) %>%
+  group_by(COMMU_NORM) %>%
+  summarise(moy_chld = mean(Taux_Chlordecone, na.rm = TRUE), .groups = "drop")
+
+shp_2010 <- martinique_sf %>% left_join(stats_2010, by = c("LIBGEO_NORM" = "COMMU_NORM"))
+shp_2019 <- martinique_sf %>% left_join(stats_2019, by = c("LIBGEO_NORM" = "COMMU_NORM"))
+
+# Échelle commune aux deux cartes
+val_max <- max(c(shp_2010$moy_chld, shp_2019$moy_chld), na.rm = TRUE)
+
+palette_grad <- scale_fill_gradientn(
+  colours  = c("#ffffcc", "#fecc5c", "#fd8d3c", "#f03b20", "#bd0026"),
+  name     = "Taux moyen\n(mg/kg MS)",
+  na.value = "grey80",
+  limits   = c(0, val_max),
+  trans    = "sqrt"
+)
+
+p_2010 <- ggplot(shp_2010) +
+  geom_sf(aes(fill = moy_chld), color = "white", linewidth = 0.4) +
+  palette_grad +
+  theme_map() +
+  theme(legend.position = "none",
+        plot.title = element_text(size = 12, face = "bold")) +
+  labs(title = "2010")
+
+p_2019 <- ggplot(shp_2019) +
+  geom_sf(aes(fill = moy_chld), color = "white", linewidth = 0.4) +
+  palette_grad +
+  theme_map() +
+  theme(legend.position = "right",
+        plot.title = element_text(size = 12, face = "bold")) +
+  labs(title = "2019")
+
+(p_2010 | p_2019) +
+  plot_annotation(
+    title    = "Évolution du taux moyen de chlordécone : 2010 vs 2019",
+    subtitle = "Même échelle de couleur – la contamination diminue globalement sur la période",
+    caption  = "Source : BaseCLD2026",
+    theme    = theme(plot.title    = element_text(size = 14, face = "bold"),
+                     plot.subtitle = element_text(size = 10, color = "grey40"))
+  )
+```
+
+Globalement, avec les années, comme dans les précèdentes analyses, le taux diminu.
+
+## Carte 4 : Nombre de prélèvements par commune (effort d'échantillonnage)
+
+```{r carte-nb-prelevements, fig.width=8, fig.height=7}
+ggplot(martinique_stats_sf) +
+  geom_sf(aes(fill = nb_prelevements), color = "white", linewidth = 0.4) +
+  scale_fill_gradientn(
+    colours  = c("#f7fbff", "#c6dbef", "#6baed6", "#2171b5", "#08306b"),
+    name     = "Nb de\nprélèvements",
+    na.value = "grey80"
+  ) +
+  geom_sf_text(aes(label = paste0(LIBGEO, "\n(n=", nb_prelevements, ")")),
+               size = 1.8, color = "white", check_overlap = TRUE) +
+  theme_map() +
+  theme(
+    legend.position = "right",
+    plot.title      = element_text(size = 14, face = "bold"),
+    plot.subtitle   = element_text(size = 10, color = "grey40")
+  ) +
+  labs(
+    title    = "Effort d'échantillonnage par commune (2010–2019)",
+    subtitle = "Nombre total de prélèvements",
+    caption  = "Source : BaseCLD2026"
+  )
+```
+
+On voit que les agents qui prélèvent les taux de chlordecone se focalisent aux bons endroits, car les prélèvement se font sur les territoires où les taux sont les plus hauts.
+
+## Bilan de la section cartographique
+
+La cartographie spatiale confirme et complète les résultats statistiques obtenus dans les sections précédentes :
+
+1.  **Hétérogénéité géographique forte** : la contamination n'est pas homogène sur le territoire martiniquais. Les communes du nord et nord-est sont structurellement plus atteintes.
+
+2.  **Décroissance temporelle spatialement différenciée** : la baisse du taux moyen observée entre 2010 et 2019 n'est pas uniforme. Certaines communes du nord maintiennent des niveaux élevés.
+
+3.  **Zones prioritaires pour la surveillance** : Morne-Rouge, Grand-Rivière, Macouba et Basse-Pointe constituent les foyers de contamination à surveiller en priorité.
+
+4.  **Cohérence avec les analyses précédentes** : le type de sol (Andosol, concentré au nord), la pluviométrie et la topographie montagne expliquent en partie cette distribution spatiale.
